@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "adftd"
+version = "1.0.0"
+description = "Adversarial Disclosure-Aware Financial Statement Fraud Detection via Counterfactual Trajectory Learning"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "anonymized-for-review"},
+]
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.3.0",
+    "datasets>=2.14.0",
+    "openai>=1.10.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+llama = [
+    "transformers>=4.40.0",
+    "bitsandbytes>=0.43.0",
+    "accelerate>=0.28.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100

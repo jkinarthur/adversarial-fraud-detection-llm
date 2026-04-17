@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Data (too large / proprietary)
+data/raw/
+data/features/
+*.pkl
+*.parquet
+*.csv
+*.hdf5
+*.h5
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Logs
+logs/
+*.log
+*.json
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# API keys — never commit
+.env
+*.env
+secrets.yaml

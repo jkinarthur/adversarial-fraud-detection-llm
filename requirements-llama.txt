@@ -1,0 +1,4 @@
+# Optional: Llama-3 local embedder (zero API cost)
+transformers>=4.40.0
+bitsandbytes>=0.43.0
+accelerate>=0.28.0
