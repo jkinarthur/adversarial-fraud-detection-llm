@@ -3,9 +3,13 @@ AD-FTD Configuration
 All hyperparameters and paths are centralised here.
 """
 from __future__ import annotations
+import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -106,12 +110,72 @@ class TrainConfig:
 
 
 @dataclass
+class AWSConfig:
+    """AWS / S3 configuration for cloud execution."""
+    s3_bucket: Optional[str] = None      # e.g. "my-adftd-bucket"; None = local only
+    s3_prefix: str = "adftd"             # key prefix inside the bucket
+    region: str = "us-east-1"
+    num_gpus: int = 1                    # 1 = single GPU; >1 = DataParallel
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S3 I/O helpers  (boto3 is an optional dep; errors are logged, not raised)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def s3_upload(local_path: str, bucket: str, key: str,
+              region: str = "us-east-1") -> None:
+    """Upload a local file to S3.  Silently logs on failure."""
+    try:
+        import boto3  # type: ignore
+        boto3.client("s3", region_name=region).upload_file(
+            str(local_path), bucket, key
+        )
+        logger.info("S3 upload: %s → s3://%s/%s", local_path, bucket, key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("S3 upload failed (%s → s3://%s/%s): %s",
+                        local_path, bucket, key, exc)
+
+
+def s3_download(bucket: str, key: str, local_path: str,
+                region: str = "us-east-1") -> bool:
+    """Download an S3 object to a local path.  Returns True on success."""
+    try:
+        import boto3  # type: ignore
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        boto3.client("s3", region_name=region).download_file(
+            bucket, key, str(local_path)
+        )
+        logger.info("S3 download: s3://%s/%s → %s", bucket, key, local_path)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("S3 download failed (s3://%s/%s → %s): %s",
+                        bucket, key, local_path, exc)
+        return False
+
+
+def resolve_s3_path(path: str, local_cache_dir: str = "/tmp/adftd_cache",
+                    region: str = "us-east-1") -> str:
+    """
+    If *path* starts with ``s3://``, download it to *local_cache_dir* and
+    return the local path.  Otherwise return *path* unchanged.
+    """
+    if not path.startswith("s3://"):
+        return path
+    without_scheme = path[5:]
+    bucket, _, key = without_scheme.partition("/")
+    local = os.path.join(local_cache_dir, os.path.basename(key))
+    s3_download(bucket, key, local, region)
+    return local
+
+
+@dataclass
 class ADFTDConfig:
     data: DataConfig = field(default_factory=DataConfig)
     embedder: EmbedderConfig = field(default_factory=EmbedderConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    aws: AWSConfig = field(default_factory=AWSConfig)
 
     def __post_init__(self) -> None:
         # Sync trajectory_dim from feature config to model config

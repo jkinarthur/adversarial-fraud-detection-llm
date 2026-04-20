@@ -56,7 +56,8 @@ class ADFTDTrainer:
         self.device = torch.device(
             cfg.train.device if torch.cuda.is_available() else "cpu"
         )
-        logger.info("Using device: %s", self.device)
+        self.num_gpus = getattr(cfg.aws, "num_gpus", 1)
+        logger.info("Using device: %s  |  num_gpus: %d", self.device, self.num_gpus)
 
     # ──────────────────────────────────────────────────────────────────────
     # Single fold training
@@ -69,6 +70,12 @@ class ADFTDTrainer:
     ) -> Tuple[ADFTD, Dict]:
         cfg = self.cfg
         model = ADFTD.from_config(cfg.model).to(self.device)
+
+        # ── DataParallel for multi-GPU (e.g. p3.8xlarge / p4d) ───────────
+        if self.num_gpus > 1 and torch.cuda.device_count() >= self.num_gpus:
+            gpu_ids = list(range(self.num_gpus))
+            model = nn.DataParallel(model, device_ids=gpu_ids)
+            logger.info("DataParallel on %d GPUs: %s", self.num_gpus, gpu_ids)
 
         # Class-imbalance weight from training data
         labels = [b["y"].mean().item() for b in train_loader]
@@ -224,9 +231,21 @@ class ADFTDTrainer:
                 # Save checkpoint
                 ckpt_dir = Path(cfg.train.checkpoint_dir)
                 ckpt_dir.mkdir(parents=True, exist_ok=True)
-                torch.save(
-                    model.state_dict(),
-                    ckpt_dir / f"adftd_r{resample}_f{fold_id}.pt",
-                )
+                ckpt_path = ckpt_dir / f"adftd_r{resample}_f{fold_id}.pt"
+                # Unwrap DataParallel before saving
+                state = (model.module if isinstance(model, nn.DataParallel)
+                         else model).state_dict()
+                torch.save(state, ckpt_path)
+
+                # Upload checkpoint to S3 immediately after saving (spot safety)
+                aws = getattr(self.cfg, "aws", None)
+                if aws and aws.s3_bucket:
+                    from ..config import s3_upload
+                    s3_upload(
+                        str(ckpt_path),
+                        aws.s3_bucket,
+                        f"{aws.s3_prefix}/{ckpt_path.name}",
+                        region=aws.region,
+                    )
 
         return all_results

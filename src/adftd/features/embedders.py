@@ -3,12 +3,19 @@ Paragraph embedders: GPT-3.5 (OpenAI) and Llama-3-8B-Instruct (local, 4-bit).
 
 Both implement the same interface:
     embedder.embed(texts: List[str]) -> np.ndarray  shape (N, embed_dim)
+
+Both also expose:
+    embedder.embed_with_cache(texts, cache_path) -> np.ndarray
+  which persists batches to disk, enabling safe resume on spot instances.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import pickle
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -23,6 +30,53 @@ class BaseEmbedder(ABC):
     @abstractmethod
     def embed(self, texts: List[str]) -> np.ndarray:
         """Return (N, embed_dim) float32 array."""
+
+    def embed_with_cache(self, texts: List[str], cache_path: str) -> np.ndarray:
+        """
+        Embed *texts*, using a pickle cache at *cache_path* for durability.
+
+        Already-embedded batches are loaded from cache; only new texts are
+        sent to the API/model.  Safe to interrupt and restart on spot instances.
+
+        Cache format: dict mapping sha256(text) -> embedding vector.
+        """
+        cache_file = Path(cache_path)
+        cache: dict = {}
+        if cache_file.exists():
+            with open(cache_file, "rb") as f:
+                cache = pickle.load(f)
+            logger.info("Embedding cache loaded (%d entries) from %s",
+                        len(cache), cache_path)
+
+        result = np.zeros((len(texts), 0), dtype=np.float32)  # placeholder
+        uncached_indices: List[int] = []
+        uncached_texts: List[str] = []
+
+        for i, t in enumerate(texts):
+            key = hashlib.sha256(t.encode()).hexdigest()
+            if key not in cache:
+                uncached_indices.append(i)
+                uncached_texts.append(t)
+
+        if uncached_texts:
+            logger.info("Embedding %d uncached texts ...", len(uncached_texts))
+            new_vecs = self.embed(uncached_texts)
+            for j, (idx, t) in enumerate(zip(uncached_indices, uncached_texts)):
+                key = hashlib.sha256(t.encode()).hexdigest()
+                cache[key] = new_vecs[j]
+            # Persist updated cache
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "wb") as f:
+                pickle.dump(cache, f)
+            logger.info("Cache updated (%d total entries)", len(cache))
+
+        # Reconstruct full result in original order
+        dim = next(iter(cache.values())).shape[0]
+        result = np.zeros((len(texts), dim), dtype=np.float32)
+        for i, t in enumerate(texts):
+            key = hashlib.sha256(t.encode()).hexdigest()
+            result[i] = cache[key]
+        return result
 
 
 # ──────────────────────────────────────────────────────────────────────────────

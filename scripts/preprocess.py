@@ -15,10 +15,17 @@ Usage:
 
 Set OPENAI_API_KEY (or HF_TOKEN for llama3) before running.
 Approximate cost with GPT-3.5: ~USD 3,500 for full corpus.
+
+AWS usage:
+    python scripts/preprocess.py --backend llama3 \
+        --s3_bucket my-bucket --s3_prefix adftd/features \
+        --resume
+    Use --resume to skip already-processed CIKs (safe on spot instances).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import pickle
 from pathlib import Path
@@ -43,6 +50,15 @@ def parse_args():
     p.add_argument("--traj_len", type=int, default=3)
     p.add_argument("--lm_dict", default=None,
                    help="Path to Loughran-McDonald master dictionary CSV (optional)")
+    # ── AWS arguments ──────────────────────────────────────────────────────
+    p.add_argument("--s3_bucket", default=None,
+                   help="S3 bucket name; if set, upload outputs on completion")
+    p.add_argument("--s3_prefix", default="adftd/features",
+                   help="S3 key prefix for uploaded artefacts")
+    p.add_argument("--region", default="us-east-1")
+    p.add_argument("--resume", action="store_true",
+                   help="Skip CIKs already recorded in progress.json "
+                        "(safe restart after spot-instance interruption)")
     return p.parse_args()
 
 
@@ -50,6 +66,14 @@ def main():
     args = parse_args()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Resume: load set of already-processed CIKs ────────────────────────
+    progress_file = out_dir / "progress.json"
+    processed_ciks: set = set()
+    if args.resume and progress_file.exists():
+        with open(progress_file) as f:
+            processed_ciks = set(json.load(f).get("processed_ciks", []))
+        logger.info("Resume mode: %d CIKs already processed", len(processed_ciks))
 
     # ── Load word categories ──────────────────────────────────────────────
     from src.adftd.features.fraud_w2v import WORD_CATEGORIES, load_lm_wordlists
@@ -81,7 +105,10 @@ def main():
     # ── Build trajectories ────────────────────────────────────────────────
     from src.adftd.features.trajectory import build_trajectory_sequence
     trajectories: dict = {}   # (cik, year) -> (T, D)
-    for cik, year_texts in texts_by_cik.items():
+    total_ciks = len(texts_by_cik)
+    for idx, (cik, year_texts) in enumerate(texts_by_cik.items()):
+        if cik in processed_ciks:
+            continue
         result = build_trajectory_sequence(
             texts_by_year=year_texts,
             embed_fn=embed_fn,
@@ -89,9 +116,17 @@ def main():
             traj_len=args.traj_len,
         )
         if result is None:
+            processed_ciks.add(cik)
             continue
         for year, traj in result.items():
             trajectories[(cik, year)] = traj
+        processed_ciks.add(cik)
+
+        # Save progress every 100 CIKs for spot-instance safety
+        if (idx + 1) % 100 == 0:
+            with open(progress_file, "w") as f:
+                json.dump({"processed_ciks": list(processed_ciks)}, f)
+            logger.info("Progress: %d / %d CIKs", idx + 1, total_ciks)
 
     logger.info("Built %d (cik, year) trajectory tensors", len(trajectories))
 
@@ -146,6 +181,19 @@ def main():
     with open(out_path, "wb") as f:
         pickle.dump(samples, f)
     logger.info("Saved %d samples to %s", len(samples), out_path)
+
+    # ── Upload to S3 (if configured) ──────────────────────────────────────
+    if args.s3_bucket:
+        from src.adftd.config import s3_upload
+        s3_upload(str(out_path),
+                  args.s3_bucket,
+                  f"{args.s3_prefix}/samples.pkl",
+                  region=args.region)
+        # Also upload AAER CSV for traceability
+        s3_upload(args.aaer_csv,
+                  args.s3_bucket,
+                  f"{args.s3_prefix}/aaer_labels.csv",
+                  region=args.region)
 
 
 if __name__ == "__main__":

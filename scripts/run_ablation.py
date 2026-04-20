@@ -55,6 +55,11 @@ def parse_args():
     p.add_argument("--device", default="cpu")
     p.add_argument("--out", default="results")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--s3_bucket", default=None,
+                   help="S3 bucket for result upload")
+    p.add_argument("--s3_prefix", default="adftd/results",
+                   help="S3 key prefix")
+    p.add_argument("--region", default="us-east-1")
     return p.parse_args()
 
 
@@ -370,6 +375,13 @@ def main():
     with open(out_dir / "table3_ablation.json", "w") as f:
         json.dump(table3, f, indent=2)
     logger.info("Table III -> %s", out_dir / "table3_ablation.json")
+
+    if args.s3_bucket:
+        from adftd.config import s3_upload
+        for json_file in out_dir.glob("*.json"):
+            s3_upload(str(json_file), args.s3_bucket,
+                      f"{args.s3_prefix}/{json_file.name}",
+                      region=args.region)
 
 
 if __name__ == "__main__":

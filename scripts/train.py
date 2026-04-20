@@ -7,6 +7,13 @@ Usage:
         --traj_len 3 \
         --epochs 50 \
         --device cuda
+
+AWS usage:
+    python scripts/train.py \
+        --features data/features/samples.pkl \
+        --device cuda --num_gpus 4 \
+        --s3_bucket my-bucket --s3_prefix adftd/checkpoints \
+        --resume_checkpoint checkpoints/adftd_r0_f0.pt
 """
 from __future__ import annotations
 
@@ -38,19 +45,32 @@ def parse_args():
     p.add_argument("--device", default="cuda")
     p.add_argument("--checkpoint_dir", default="checkpoints")
     p.add_argument("--seed", type=int, default=42)
+    # ── AWS arguments ──────────────────────────────────────────────────────
+    p.add_argument("--num_gpus", type=int, default=1,
+                   help="Number of GPUs for DataParallel (1 = single GPU)")
+    p.add_argument("--s3_bucket", default=None,
+                   help="S3 bucket; if set, upload checkpoints after each fold")
+    p.add_argument("--s3_prefix", default="adftd/checkpoints",
+                   help="S3 key prefix for checkpoint uploads")
+    p.add_argument("--region", default="us-east-1")
+    p.add_argument("--resume_checkpoint", default=None,
+                   help="Path (or s3://) to a checkpoint to resume from "
+                        "(skips resamples/folds already completed)")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    # ── Load samples ──────────────────────────────────────────────────────
-    with open(args.features, "rb") as f:
+    # ── Resolve features file (supports s3://) ────────────────────────────
+    from src.adftd.config import resolve_s3_path
+    features_path = resolve_s3_path(args.features, region=args.region)
+    with open(features_path, "rb") as f:
         samples = pickle.load(f)
     logger.info("Loaded %d samples", len(samples))
 
     # ── Build config ──────────────────────────────────────────────────────
-    from src.adftd.config import ADFTDConfig, TrainConfig, ModelConfig
+    from src.adftd.config import ADFTDConfig, AWSConfig
     cfg = ADFTDConfig()
     cfg.train.epochs = args.epochs
     cfg.train.batch_size = args.batch_size
@@ -63,6 +83,12 @@ def main():
     cfg.train.device = args.device
     cfg.train.checkpoint_dir = args.checkpoint_dir
     cfg.train.seed = args.seed
+    cfg.aws = AWSConfig(
+        s3_bucket=args.s3_bucket,
+        s3_prefix=args.s3_prefix,
+        region=args.region,
+        num_gpus=args.num_gpus,
+    )
 
     # Auto-detect dims from first sample
     traj_dim = samples[0]["trajectory"].shape[-1]
@@ -125,9 +151,23 @@ def main():
         logger.info("  %s: %.4f", k, v)
 
     Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
-    with open(Path(args.checkpoint_dir) / "summary.json", "w") as f:
+    summary_path = Path(args.checkpoint_dir) / "summary.json"
+    with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     logger.info("Summary saved to %s/summary.json", args.checkpoint_dir)
+
+    # ── Upload all checkpoints + summary to S3 ────────────────────────────
+    if args.s3_bucket:
+        from src.adftd.config import s3_upload
+        for pt_file in Path(args.checkpoint_dir).glob("*.pt"):
+            s3_upload(str(pt_file),
+                      args.s3_bucket,
+                      f"{args.s3_prefix}/{pt_file.name}",
+                      region=args.region)
+        s3_upload(str(summary_path),
+                  args.s3_bucket,
+                  f"{args.s3_prefix}/summary.json",
+                  region=args.region)
 
 
 if __name__ == "__main__":

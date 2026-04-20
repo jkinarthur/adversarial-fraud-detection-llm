@@ -56,6 +56,11 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--skip_adftd", action="store_true",
                    help="Skip AD-FTD (use if already trained separately)")
+    p.add_argument("--s3_bucket", default=None,
+                   help="S3 bucket for result upload")
+    p.add_argument("--s3_prefix", default="adftd/results",
+                   help="S3 key prefix")
+    p.add_argument("--region", default="us-east-1")
     return p.parse_args()
 
 
@@ -357,6 +362,16 @@ def main():
 
     logger.info("Table I  -> %s", out_dir / "table1_main.json")
     logger.info("Table II -> %s", out_dir / "table2_adv.json")
+
+    # ── Upload results to S3 (if configured) ─────────────────────────────
+    if args.s3_bucket:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from adftd.config import s3_upload
+        for json_file in out_dir.glob("*.json"):
+            s3_upload(str(json_file), args.s3_bucket,
+                      f"{args.s3_prefix}/{json_file.name}",
+                      region=args.region)
 
 
 if __name__ == "__main__":

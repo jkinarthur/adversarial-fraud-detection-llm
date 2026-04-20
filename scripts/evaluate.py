@@ -8,6 +8,12 @@ Usage:
         --checkpoint checkpoints/adftd_r0_f0.pt \
         --features data/features/samples.pkl \
         --device cuda
+
+AWS usage (load directly from S3):
+    python scripts/evaluate.py \
+        --checkpoint s3://my-bucket/adftd/checkpoints/adftd_r0_f0.pt \
+        --features s3://my-bucket/adftd/features/samples.pkl \
+        --region us-east-1
 """
 from __future__ import annotations
 
@@ -27,19 +33,28 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     p = argparse.ArgumentParser(description="Evaluate AD-FTD checkpoint")
-    p.add_argument("--checkpoint", required=True)
-    p.add_argument("--features", default="data/features/samples.pkl")
+    p.add_argument("--checkpoint", required=True,
+                   help="Local path or s3://bucket/key to model checkpoint")
+    p.add_argument("--features", default="data/features/samples.pkl",
+                   help="Local path or s3://bucket/key to samples pickle")
     p.add_argument("--traj_len", type=int, default=3)
     p.add_argument("--epsilon", type=float, default=0.01)
     p.add_argument("--device", default="cpu")
     p.add_argument("--out", default="eval_results.json")
+    p.add_argument("--region", default="us-east-1",
+                   help="AWS region (only needed when using s3:// paths)")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    with open(args.features, "rb") as f:
+    # ── Resolve S3 paths to local files ───────────────────────────────────
+    from src.adftd.config import resolve_s3_path
+    features_path = resolve_s3_path(args.features, region=args.region)
+    checkpoint_path = resolve_s3_path(args.checkpoint, region=args.region)
+
+    with open(features_path, "rb") as f:
         samples = pickle.load(f)
 
     traj_dim = samples[0]["trajectory"].shape[-1]
@@ -51,7 +66,7 @@ def main():
     from src.adftd.models.adftd import ADFTD
     device = torch.device(args.device)
     model = ADFTD.from_config(cfg).to(device)
-    state = torch.load(args.checkpoint, map_location=device)
+    state = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state)
     model.eval()
     logger.info("Loaded checkpoint %s", args.checkpoint)
